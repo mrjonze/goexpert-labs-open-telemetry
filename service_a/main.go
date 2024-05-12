@@ -92,7 +92,7 @@ func SearchCepHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func CallServiceB(cep string) (*Response, error) {
-	req, err := http.Get("http://localhost:8081/?cep=" + cep)
+	req, err := http.Get("http://goapp-service-b:8081/?cep=" + cep)
 	if err != nil {
 		return nil, err
 	}
