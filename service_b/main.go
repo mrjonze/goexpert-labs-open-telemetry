@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"unicode"
 )
 
@@ -24,13 +23,16 @@ type WeatherApi struct {
 	} `json:"current"`
 }
 
-var postData struct {
-	Cep string `json:"cep"`
+type Response struct {
+	TempC float64 `json:"temp_c"`
+	TempF float64 `json:"temp_f"`
+	TempK float64 `json:"temp_k"`
+	City  string  `json:"city"`
 }
 
 func main() {
 	http.HandleFunc("/", SearchCepHandler)
-	http.ListenAndServe(":8080", nil)
+	http.ListenAndServe(":8081", nil)
 }
 
 func SearchCepHandler(w http.ResponseWriter, r *http.Request) {
@@ -40,36 +42,9 @@ func SearchCepHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
-	defer r.Body.Close()
+	cepParam := r.URL.Query().Get("cep")
 
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("error reading request body"))
-		return
-	}
-
-	err = json.Unmarshal(body, &postData)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("error unmarshalling request body"))
-		return
-	}
-
-	if postData.Cep == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("cep parameter is required"))
-		return
-	}
-
-	validate := regexp.MustCompile(`^[0-9]{8}$`)
-	if !validate.MatchString(postData.Cep) {
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		w.Write([]byte("invalid zipcode"))
-		return
-	}
-
-	cep, err := SearchCep(postData.Cep)
+	cep, err := SearchCep(cepParam)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		errorStr := err.Error()
@@ -93,12 +68,7 @@ func SearchCepHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("error while searching for temperature: " + errorStr))
 		return
 	}
-	if weather != nil {
-		json.NewEncoder(w).Encode(weather.Current)
-	} else {
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("can not find temperature"))
-	}
+	json.NewEncoder(w).Encode(weather)
 }
 
 func SearchCep(cep string) (*ViaCep, error) {
@@ -122,8 +92,9 @@ func SearchCep(cep string) (*ViaCep, error) {
 	return &data, nil
 }
 
-func SearchTemperature(city string) (*WeatherApi, error) {
-	req, err := http.Get("http://api.weatherapi.com/v1/current.json?key=148a907896384b7b89f232427240605&aqi=no&q=" + removeDiacriticsAndEncodeCityName(city))
+func SearchTemperature(city string) (*Response, error) {
+	urlWeatherApi := "http://api.weatherapi.com/v1/current.json?key=12969ce544064451ab2103040240905&aqi=no&q=" + removeDiacriticsAndEncodeCityName(city)
+	req, err := http.Get(urlWeatherApi)
 
 	if err != nil {
 		return nil, err
@@ -144,7 +115,7 @@ func SearchTemperature(city string) (*WeatherApi, error) {
 	data.Current.TempF = data.Current.TempC*1.8 + 32
 	data.Current.TempK = data.Current.TempC + 273
 
-	return &data, nil
+	return &Response{City: city, TempC: data.Current.TempC, TempF: data.Current.TempF, TempK: data.Current.TempK}, nil
 }
 
 func isMn(r rune) bool {
@@ -155,6 +126,5 @@ func removeDiacriticsAndEncodeCityName(s string) string {
 	t := transform.Chain(norm.NFD, transform.RemoveFunc(isMn), norm.NFC)
 	result, _, _ := transform.String(t, s)
 	result = url.QueryEscape(result)
-	println(result)
 	return result
 }
