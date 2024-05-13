@@ -1,13 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"golang.org/x/text/transform"
-	"golang.org/x/text/unicode/norm"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"unicode"
+
+	"github.com/go-chi/chi"
+	"github.com/go-chi/chi/middleware"
+	"go.opentelemetry.io/otel"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 )
 
 type ViaCep struct {
@@ -31,11 +37,23 @@ type Response struct {
 }
 
 func main() {
-	http.HandleFunc("/", SearchCepHandler)
-	http.ListenAndServe(":8081", nil)
+	startZipkin()
+
+	r := chi.NewRouter()
+
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+
+	r.Route("/", func(r chi.Router) {
+		r.Get("/", SearchCepHandler)
+	})
+
+	http.ListenAndServe(":8081", r)
 }
 
 func SearchCepHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, span := otel.Tracer("service-b").Start(r.Context(), "service-b-full-request")
+	defer span.End()
 
 	if r.URL.Path != "/" {
 		w.WriteHeader(http.StatusNotFound)
@@ -44,7 +62,14 @@ func SearchCepHandler(w http.ResponseWriter, r *http.Request) {
 
 	cepParam := r.URL.Query().Get("cep")
 
-	cep, err := SearchCep(cepParam)
+	validate := regexp.MustCompile(`^[0-9]{8}$`)
+	if !validate.MatchString(cepParam) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte("invalid zipcode"))
+		return
+	}
+
+	cep, err := SearchCep(cepParam, ctx)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		errorStr := err.Error()
@@ -60,7 +85,7 @@ func SearchCepHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	weather, err := SearchTemperature(cep.Localidade)
+	weather, err := SearchTemperature(cep.Localidade, ctx)
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -71,7 +96,10 @@ func SearchCepHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(weather)
 }
 
-func SearchCep(cep string) (*ViaCep, error) {
+func SearchCep(cep string, ctx context.Context) (*ViaCep, error) {
+	_, span := otel.Tracer("service-b").Start(ctx, "call-to-viacep")
+	defer span.End()
+
 	req, err := http.Get("http://viacep.com.br/ws/" + cep + "/json/")
 	if err != nil {
 		return nil, err
@@ -92,7 +120,10 @@ func SearchCep(cep string) (*ViaCep, error) {
 	return &data, nil
 }
 
-func SearchTemperature(city string) (*Response, error) {
+func SearchTemperature(city string, ctx context.Context) (*Response, error) {
+	_, span := otel.Tracer("service-b").Start(ctx, "call-to-weatherapi")
+	defer span.End()
+
 	urlWeatherApi := "http://api.weatherapi.com/v1/current.json?key=12969ce544064451ab2103040240905&aqi=no&q=" + removeDiacriticsAndEncodeCityName(city)
 	req, err := http.Get(urlWeatherApi)
 

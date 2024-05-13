@@ -16,7 +16,7 @@ Content-Type: application/json
   "cep": "01311000"
 }
 
-### Cenário 3 (Inválido - 429)
+### Cenário 3 (Inválido - 422)
 
 POST http://localhost:8080/
 Content-Type: application/json
@@ -32,4 +32,13 @@ Content-Type: application/json
 
 {
   "cep": "33333333"
+}
+
+### Cenário 5 (Inválido - 400)
+
+POST http://localhost:8080/
+Content-Type: application/json
+
+{
+  "cep": ""
 }

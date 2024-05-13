@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"regexp"
+
+	"github.com/go-chi/chi"
+	"github.com/go-chi/chi/middleware"
+	"go.opentelemetry.io/otel"
 )
 
 type Response struct {
@@ -20,8 +25,18 @@ var postData struct {
 }
 
 func main() {
-	http.HandleFunc("/", SearchCepHandler)
-	http.ListenAndServe(":8080", nil)
+	startZipkin()
+
+	r := chi.NewRouter()
+
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.Logger)
+
+	r.Post("/", SearchCepHandler)
+
+	http.ListenAndServe(":8080", r)
 }
 
 func SearchCepHandler(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +75,7 @@ func SearchCepHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	temperature, err := CallServiceB(postData.Cep)
+	temperature, err := CallServiceB(postData.Cep, r.Context())
 
 	if err != nil {
 		errorStr := err.Error()
@@ -75,15 +90,9 @@ func SearchCepHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		errorStr := err.Error()
-		w.Write([]byte("error while searching for temperature: " + errorStr))
-		return
-	}
 	if temperature != nil {
+		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(temperature)
 	} else {
 		w.WriteHeader(http.StatusNotFound)
@@ -91,21 +100,30 @@ func SearchCepHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func CallServiceB(cep string) (*Response, error) {
-	req, err := http.Get("http://goapp-service-b:8081/?cep=" + cep)
+func CallServiceB(cep string, ctx context.Context) (*Response, error) {
+	_, span := otel.Tracer("service-a").Start(ctx, "call-to-service-b")
+	defer span.End()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://goapp-service-b:8081/?cep="+cep, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer req.Body.Close()
 
-	if req.StatusCode == http.StatusNotFound {
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
 		return nil, errors.New("can not find zipcode")
 	}
 
-	res, err := io.ReadAll(req.Body)
+	res, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
+
+	defer resp.Body.Close()
 
 	var data Response
 	err = json.Unmarshal(res, &data)
